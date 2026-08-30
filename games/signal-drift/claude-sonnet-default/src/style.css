@@ -1,0 +1,352 @@
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: #05070d;
+  color: #f6f5ef;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+#app {
+  position: relative;
+}
+
+#app canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hud-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  background: linear-gradient(to bottom, rgba(6, 10, 18, 0.75), rgba(6, 10, 18, 0));
+}
+
+.charge-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.charge-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: #9fd8ff;
+  min-width: 84px;
+}
+
+.charge-track {
+  width: 140px;
+  height: 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  border: 1px solid rgba(159, 216, 255, 0.35);
+}
+
+.charge-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #2ad8ff, #7fffe0);
+  transition: width 0.15s linear;
+}
+
+.charge-fill.low {
+  background: linear-gradient(90deg, #ff4d4d, #ffb020);
+}
+
+.relay-wrap {
+  display: flex;
+  gap: 6px;
+}
+
+.relay-pip {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.relay-pip.next {
+  border-color: #2ad8ff;
+  color: #2ad8ff;
+  box-shadow: 0 0 10px rgba(42, 216, 255, 0.6);
+}
+
+.relay-pip.restored {
+  border-color: #38ff9e;
+  background: rgba(56, 255, 158, 0.25);
+  color: #d6fff0;
+  box-shadow: 0 0 10px rgba(56, 255, 158, 0.6);
+}
+
+.score-label {
+  margin-left: auto;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: #ffe08a;
+}
+
+.mute-btn {
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #f6f5ef;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.objective-label {
+  position: absolute;
+  top: 58px;
+  left: 14px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: #dfe9f5;
+  background: rgba(6, 10, 18, 0.5);
+  padding: 5px 10px;
+  border-radius: 6px;
+  border-left: 3px solid #2ad8ff;
+}
+
+.toast {
+  position: absolute;
+  top: 100px;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  padding: 8px 16px;
+  background: rgba(6, 10, 18, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(10, 16, 28, 0.7), rgba(3, 5, 10, 0.92));
+  pointer-events: auto;
+  transition: opacity 0.25s ease;
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+.panel {
+  max-width: 480px;
+  width: min(92vw, 480px);
+  text-align: center;
+  padding: 28px 26px;
+  background: rgba(10, 16, 26, 0.85);
+  border: 1px solid rgba(120, 190, 255, 0.3);
+  border-radius: 14px;
+  box-shadow: 0 0 60px rgba(42, 216, 255, 0.15);
+}
+
+.title {
+  font-size: 30px;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  color: #eaf6ff;
+  text-shadow: 0 0 18px rgba(42, 216, 255, 0.7);
+}
+
+.title.win {
+  color: #ffe08a;
+  text-shadow: 0 0 18px rgba(255, 224, 138, 0.7);
+}
+
+.title.lose {
+  color: #ff8686;
+  text-shadow: 0 0 18px rgba(255, 90, 90, 0.7);
+}
+
+.subtitle {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #9fd8ff;
+  letter-spacing: 0.04em;
+}
+
+.blurb {
+  margin: 16px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #cfe0ee;
+}
+
+.controls-list {
+  text-align: left;
+  font-size: 12.5px;
+  color: #d8e6f2;
+  line-height: 1.8;
+  margin: 0 auto 20px;
+  padding-left: 18px;
+  max-width: 380px;
+}
+
+.end-stats {
+  margin: 16px 0;
+  font-size: 14px;
+  color: #dfe9f5;
+  line-height: 1.8;
+}
+
+.btn {
+  pointer-events: auto;
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 28px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.btn.primary {
+  background: linear-gradient(90deg, #2ad8ff, #38ff9e);
+  color: #06141c;
+  box-shadow: 0 0 24px rgba(42, 216, 255, 0.5);
+}
+
+.btn.primary:active {
+  transform: translateY(1px);
+}
+
+.touch-controls {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.stick-base {
+  position: absolute;
+  left: 26px;
+  bottom: 30px;
+  width: 116px;
+  height: 116px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.stick-nub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 52px;
+  height: 52px;
+  margin-left: -26px;
+  margin-top: -26px;
+  border-radius: 50%;
+  background: rgba(42, 216, 255, 0.55);
+  border: 1.5px solid rgba(255, 255, 255, 0.6);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.boost-btn {
+  position: absolute;
+  right: 30px;
+  bottom: 38px;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  background: rgba(255, 200, 77, 0.18);
+  border: 1.5px solid rgba(255, 200, 77, 0.55);
+  color: #ffd68a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.boost-btn.active {
+  background: rgba(255, 200, 77, 0.5);
+  box-shadow: 0 0 24px rgba(255, 200, 77, 0.7);
+}
+
+.pause-overlay .panel {
+  padding: 20px 32px;
+}
+
+@media (max-width: 480px) {
+  .hud-bar {
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .charge-track {
+    width: 96px;
+  }
+  .charge-label {
+    min-width: 64px;
+    font-size: 10px;
+  }
+  .score-label {
+    font-size: 11px;
+  }
+  .mute-btn {
+    font-size: 9px;
+    padding: 5px 8px;
+  }
+  .objective-label {
+    top: 52px;
+    font-size: 11.5px;
+  }
+  .title {
+    font-size: 24px;
+  }
+  .panel {
+    padding: 20px 18px;
+  }
+}

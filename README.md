@@ -1,14 +1,18 @@
 # AetherPlay Games
 
-Published source and production builds from [AetherPlay Bench](https://github.com/dairui1/aetherplay-bench).
+Published source from [AetherPlay Bench](https://github.com/dairui1/aetherplay-bench).
 
-Each completed season is released only after its full model matrix closes, preventing later candidates from seeing earlier solutions. Every submission directory contains the untouched terminal workspace, a production build, and an immutable manifest with source and build digests.
+Each season is released only after its full model matrix closes, preventing later candidates from seeing earlier solutions. Runtime credentials, raw traces, benchmark prompts, manifests, and evaluator output remain outside this repository.
 
 Playable versions are served at [aetherplaybench.dairui1.com](https://aetherplaybench.dairui1.com/).
 
 ```text
-submissions/<season>/<task>/<submission-id>/
-  source/
-  dist/
-  submission.json
+games/<task-id>/<profile-id>/
+  package.json
+  src/
+  ...candidate-created source and tests
 ```
+
+The first pilot contains six Signal Drift implementations. Five completed inside the
+one-hour generation limit; the `pi-deepseek-v4-flash` directory is the playable build source
+left by a run that reached the time limit during its own extended browser tests.
