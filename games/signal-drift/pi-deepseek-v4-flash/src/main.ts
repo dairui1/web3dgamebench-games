@@ -4,733 +4,904 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { World, RELAY_Z, EXTRACTION_Z } from './world';
-import { Craft } from './craft';
-import { Particles } from './particles';
-import { Input } from './input';
-import { Hud } from './hud';
-import { AudioEngine } from './audio';
-import { COURSE_SEED } from './rng';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 
-/* ---------------- tuning constants ---------------- */
-const CHARGE_MAX = 100;
-const BASE_SPEED = 62;
-const BOOST_SPEED = 99;
-const DRAIN = 4.0;
-const BOOST_DRAIN = 5.4;
-const MAX_VX = 30;
-const MAX_VY = 20;
-const BOUND_X = 34;
-const BOUND_Y_MIN = -17;
-const BOUND_Y_MAX = 26;
-const ORB_R = 3.4;
-const ORB_CHARGE = 12;
-const HIT_R = 3.0;
-const HIT_DAMAGE = 24;
-const ARCH_R = 9;
+import { AudioFX } from './game/audio';
+import { Course, EXTRACT_Z, GATE_ZS, SEED } from './game/course';
+import { Particles } from './game/particles';
+import { Player, CRAFT_R, CRUISE } from './game/player';
+import { Skyline } from './game/sky';
+import { UI } from './game/ui';
 
 type Phase = 'ready' | 'playing' | 'paused' | 'won' | 'lost';
 
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, v));
+// ============================================================================
+//  Contract object
+// ============================================================================
+const bench: {
+  phase: Phase;
+  score: number;
+  player: { x: number; y: number; z: number };
+  relaysRestored: number;
+  charge: number;
+  seed: number;
+  restartCount: number;
+  orbsCollected: number;
+  hazardHits: number;
+  timeMs: number;
+} = {
+  phase: 'ready',
+  score: 0,
+  player: { x: 0, y: 12, z: 0 },
+  relaysRestored: 0,
+  charge: 100,
+  seed: SEED,
+  restartCount: 0,
+  orbsCollected: 0,
+  hazardHits: 0,
+  timeMs: 0,
+};
+(window as unknown as Record<string, unknown>).__WEB3DGAMEBENCH__ = bench;
+
+// ============================================================================
+//  Constants
+// ============================================================================
+const MAX_CHARGE = 100;
+const BASE_DRAIN = 4.4;
+const BOOST_DRAIN = 8;
+const ORB_GAIN = 13;
+const RELAY_GAIN = 18;
+const HAZARD_DMG = 15;
+const LIGHTNING_DMG = 14;
+const OFFORDER_DMG = 7;
+const RELAY_SCORE = 250;
+const ORB_SCORE = 30;
+const WIN_SCORE = 500;
+
+// ============================================================================
+//  Bootstrap
+// ============================================================================
+const root = document.querySelector<HTMLDivElement>('#app');
+if (!root) throw new Error('Missing #app root');
+
+const renderer = new THREE.WebGLRenderer({
+  antialias: false,
+  powerPreference: 'high-performance',
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+renderer.domElement.id = 'webgl-canvas';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a1226);
+scene.fog = new THREE.FogExp2(0x182244, 0.0026);
+
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.5, 3600);
+camera.position.set(0, 17, -14);
+
+// ---- post processing
+const composer = new EffectComposer(renderer);
+composer.setPixelRatio(renderer.getPixelRatio());
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  1.05, 0.6, 0.55,
+);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+const fxaa = new ShaderPass(FXAAShader);
+fxaa.material.uniforms['resolution'].value.set(
+  1 / (window.innerWidth * renderer.getPixelRatio()),
+  1 / (window.innerHeight * renderer.getPixelRatio()),
+);
+composer.addPass(fxaa);
+
+// ---- ambient light
+scene.add(new THREE.HemisphereLight(0x8fb4e8, 0x1a2030, 0.85));
+const keyLight = new THREE.DirectionalLight(0xbfd6ff, 1.25);
+keyLight.position.set(-30, 60, 20);
+scene.add(keyLight);
+const rimLight = new THREE.DirectionalLight(0xff9a5c, 0.5);
+rimLight.position.set(25, -10, -40);
+scene.add(rimLight);
+
+// ---- world
+const skyline = new Skyline(scene);
+const player = new Player(scene, camera);
+const course = new Course(scene, SEED);
+const particles = new Particles(2400, scene);
+const audio = new AudioFX();
+const ui = new UI(root, {
+  onStart: () => {
+    audio.init();
+    audio.click();
+    startRun();
+  },
+  onResume: () => {
+    audio.init();
+    audio.click();
+    resume();
+  },
+  onRestart: () => {
+    audio.init();
+    audio.click();
+    restart(true);
+  },
+  onMute: () => {
+    audio.init();
+    ui.setMuted(audio.toggleMute());
+  },
+});
+
+// ============================================================================
+//  State
+// ============================================================================
+let phase: Phase = 'ready';
+let timeScale = 1;
+let runMs = 0;
+let charge = MAX_CHARGE;
+let relaysRestored = 0;
+let score = 0;
+let orbScore = 0;
+let relayScore = 0;
+let winBonus = 0;
+let orbsCollected = 0;
+let hazardHits = 0;
+let restartCount = 0;
+let invuln = 0;
+let boostHeld = false;
+let boostTapT = 0;
+let lostReason = '';
+let wonT = 0;
+let lostT = 0;
+let overlayShown = false;
+let failed = false;
+let twoFinger = false;
+let touchTap = false;
+let belowDeckT = 0;
+let warningTimer = 0.4;
+let strikeTimer = 4.2;
+let lockNoticeT = 0;
+
+function setPhase(p: Phase): void {
+  phase = p;
+  bench.phase = p;
 }
 
-class Game {
-  private renderer: THREE.WebGLRenderer;
-  private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(60, 1, 0.1, 4500);
-  private composer: EffectComposer;
-  private bloomPass: UnrealBloomPass;
-  private world: World;
-  private craft = new Craft();
-  private particles: Particles;
-  private input: Input;
-  private hud: Hud;
-  private audio = new AudioEngine();
-  private clockT = 0;
-  private cosT = 0;
-  private simT = 0;
-  private raf = 0;
-  private last = performance.now();
-  private muted = false;
+function startRun(): void {
+  restartCount = 0;
+  resetRun();
+  setPhase('playing');
+  ui.showOverlay(null);
+  ui.setObjective(objectiveText());
+}
 
-  // run state
-  private phase: Phase = 'ready';
-  private score = 0;
-  private charge = CHARGE_MAX;
-  private relaysRestored = 0;
-  private restartCount = 0;
-  private runTime = 0;
-  private distance = 0;
-  private vx = 0;
-  private vy = 0;
-  private speed = BASE_SPEED;
-  private invuln = 0;
-  private shake = 0;
-  private fovKick = 0;
-  private islandCd = 0;
-  private shipPos = new THREE.Vector3(0, 2, 44);
-  private camPos = new THREE.Vector3(0, 5.6, 53.6);
-  private lightningFresh = false;
+function restart(fromUi: boolean): void {
+  if (phase !== 'ready') restartCount++;
+  resetRun();
+  setPhase('playing');
+  ui.showOverlay(null);
+  ui.setObjective(objectiveText());
+  audio.click();
+  void fromUi;
+}
 
-  // inspector contract
-  private api = {
-    phase: 'ready' as Phase,
-    score: 0,
-    player: { x: 0, y: 0, z: 0 },
-    relaysRestored: 0,
-    charge: CHARGE_MAX,
-    seed: COURSE_SEED,
-    restartCount: 0,
-    nearestCharge: null as { x: number; y: number; z: number; d: number } | null,
-  };
+function resetRun(): void {
+  timeScale = 1;
+  runMs = 0;
+  charge = MAX_CHARGE;
+  relaysRestored = 0;
+  orbScore = 0;
+  relayScore = 0;
+  winBonus = 0;
+  orbsCollected = 0;
+  hazardHits = 0;
+  invuln = 0;
+  boostHeld = false;
+  boostTapT = 0;
+  wonT = 0;
+  lostT = 0;
+  overlayShown = false;
+  failed = false;
+  twoFinger = false;
+  touchTap = false;
+  belowDeckT = 0;
+  warningTimer = 0.4;
+  strikeTimer = 4.2;
+  lockNoticeT = 0;
+  strike = null;
+  player.reset();
+  course.reset();
+  clearStrike();
+  particles.clear();
+  ui.showOverlay(null);
+}
 
-  constructor() {
-    const app = document.getElementById('app') as HTMLDivElement;
-    const w = window.innerWidth;
-    const h = window.innerHeight;
+function pause(): void {
+  if (phase !== 'playing') return;
+  setPhase('paused');
+  ui.showOverlay('paused');
+  audio.click();
+}
 
-    const renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      powerPreference: 'high-performance',
-      stencil: false,
-    });
-    renderer.setSize(w, h);
-    renderer.setPixelRatio(this.pickPixelRatio());
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
-    const canvas = renderer.domElement;
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    app.appendChild(canvas);
-    this.renderer = renderer;
+function resume(): void {
+  if (phase !== 'paused') return;
+  setPhase('playing');
+  ui.showOverlay(null);
+}
 
-    this.camera.aspect = w / h;
+function fail(reason: string): void {
+  if (failed) return;
+  failed = true;
+  lostReason = reason;
+  setPhase('lost');
+  lostT = 0;
+  overlayShown = false;
+  player.addShake(3.4, 6);
+  ui.flash('#ff5544', 1.3);
+  audio.lose();
+  burst(player.x, player.y, player.z, {
+    count: 90, color: [1, 0.55, 0.25], speed: 34, spread: 1, life: 1.6, size: 2.6, gravity: -2,
+  });
+  burst(player.x, player.y, player.z, {
+    count: 40, color: [0.35, 0.85, 1], speed: 26, spread: 1, life: 0.9, size: 1.6, drag: 3,
+  });
+}
 
-    // lights
-    const hemi = new THREE.HemisphereLight(0x8fb5ff, 0x16202f, 1.05);
-    this.scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0xffd9a0, 1.6);
-    dir.position.set(60, 95, -160);
-    this.scene.add(dir);
-    const amb = new THREE.AmbientLight(0x22405e, 0.55);
-    this.scene.add(amb);
-    this.amb = amb;
-    this.dir = dir;
+function win(): void {
+  if (phase === 'won') return;
+  setPhase('won');
+  wonT = 0;
+  overlayShown = false;
+  winBonus = WIN_SCORE;
+  course.extract.setCrossed(true);
+  player.addShake(1.6, 4);
+  ui.flash('#ffe9a8', 1.1);
+  audio.win();
+  burst(player.x, player.y, player.z, {
+    count: 70, color: [1, 0.85, 0.4], speed: 22, spread: 1, life: 1.4, size: 2.2,
+  });
+}
 
-    // fog
-    this.scene.fog = new THREE.FogExp2(0x0a1224, 0.00175);
+function objectiveText(): string {
+  if (lockNoticeT > 0) return 'EXTRACTION LOCKED — RESTORE ALL THREE RELAYS FIRST';
+  if (belowDeckT > 0) return 'PULL UP — YOU ARE ENTERING THE CLOUD DECK';
+  if (relaysRestored >= 3) return 'ALL RELAYS RESTORED — CROSS THE EXTRACTION RING';
+  const next = GATE_ZS[relaysRestored];
+  return `RESTORE RELAY ${String(relaysRestored + 1).padStart(2, '0')}/03 — FOLLOW THE AMBER SIGNAL (${Math.max(0, Math.round((next - player.z) / player.speed))}s)`;
+}
 
-    // composer + bloom
-    const small = Math.min(w, h) < 600;
-    this.composer = new EffectComposer(renderer);
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(w, h),
-      small ? 0.5 : 0.72,
-      small ? 0.42 : 0.5,
-      small ? 0.68 : 0.62
-    );
-    this.composer.addPass(this.bloomPass);
-    this.composer.addPass(new OutputPass());
+function updateScore(): void {
+  score = Math.max(0, Math.floor(player.z * 0.06)) + relayScore + orbScore + winBonus;
+}
 
-    // world & craft
-    this.world = new World(COURSE_SEED);
-    this.world.init(this.scene);
-    this.world.ensureChunks(0);
-    this.scene.add(this.craft.group);
-    this.particles = new Particles(this.scene, 760);
-
-    // HUD + input
-    this.hud = new Hud({
-      onStart: () => this.startRun(),
-      onResume: () => this.resume(),
-      onPause: () => this.pause(),
-      onRestart: () => this.restart(),
-      onMute: () => this.toggleMute(),
-    });
-    this.input = new Input({
-      onStart: () => this.startRun(),
-      onTogglePause: () => {
-        if (this.phase === 'playing') this.pause();
-        else if (this.phase === 'paused') this.resume();
-      },
-      onRestart: () => {
-        if (this.phase !== 'ready') this.restart();
-      },
-      onMute: () => this.toggleMute(),
-    });
-    this.input.attach(app, this.hud.root);
-
-    this.hud.setMuteIcon(false);
-    this.hud.showOverlay('ready');
-
-    // window listeners
-    window.addEventListener('resize', this.onResize);
-    window.addEventListener('visibilitychange', this.onVisibility);
-    canvas.addEventListener('webglcontextlost', (e) => {
-      e.preventDefault();
-      this.pauseHard();
-    });
-
-    // inspector contract
-    (window as unknown as { __AETHERPLAY__: unknown }).__AETHERPLAY__ = this.api;
+function clearStrike(): void {
+  if (strike) {
+    scene.remove(strike.telegraph);
+    scene.remove(strike.bolt);
+    scene.remove(strike.glow);
+    scene.remove(strike.light);
+    strike.telegraph.geometry.dispose();
+    (strike.telegraph.material as THREE.Material).dispose();
+    strike.bolt.geometry.dispose();
+    (strike.bolt.material as THREE.Material).dispose();
+    strike.glow.material.dispose();
+    strike = null;
   }
+}
 
-  private amb!: THREE.AmbientLight;
-  private dir!: THREE.DirectionalLight;
+// ============================================================================
+//  Lightning / storm strikes
+// ============================================================================
+interface Strike {
+  x: number; y: number; z: number;
+  t: number;
+  telegraph: THREE.Mesh;
+  bolt: THREE.Mesh;
+  glow: THREE.Sprite;
+  light: THREE.PointLight;
+  struck: boolean;
+  done: boolean;
+}
+let strike: Strike | null = null;
 
-  private pickPixelRatio(): number {
-    const dpr = window.devicePixelRatio || 1;
-    const small = Math.min(window.innerWidth, window.innerHeight) < 640;
-    if (small) return Math.min(dpr, 1.6);
-    return Math.min(dpr, 2);
+function spawnStrike(craftZ: number): void {
+  let z = craftZ + 140 + Math.random() * 190;
+  for (const gz of [...GATE_ZS, EXTRACT_Z]) {
+    if (Math.abs(gz - z) < 75) z = gz + 75 + Math.random() * 30;
   }
+  const x = (Math.random() - 0.5) * 40;
+  const y = 6 + Math.random() * 15;
+  const telegraph = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.1, 2.4, 52, 8, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0xffb060, transparent: true, opacity: 0.0,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
+    }),
+  );
+  telegraph.position.set(x, y + 22, z);
+  telegraph.frustumCulled = false;
+  scene.add(telegraph);
+  const bolt = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.45, 1.9, 58, 6, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0xcfeaff, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
+    }),
+  );
+  bolt.position.set(x, y + 24, z);
+  bolt.frustumCulled = false;
+  scene.add(bolt);
+  const glowTex = makeGlowTex2();
+  const glow = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: glowTex, color: 0xffc878, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+    }),
+  );
+  glow.position.set(x, y, z);
+  glow.scale.set(16, 16, 1);
+  scene.add(glow);
+  const light = new THREE.PointLight(0xffc878, 0, 90, 1.6);
+  light.position.set(x, y + 20, z);
+  scene.add(light);
+  strike = { x, y, z, t: 0, telegraph, bolt, glow, light, struck: false, done: false };
+}
 
-  private onResize = (): void => {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
-    this.renderer.setPixelRatio(this.pickPixelRatio());
-    this.composer.setSize(w, h);
-  };
-
-  private onVisibility = (): void => {
-    if (document.hidden && this.phase === 'playing') this.pause();
-  };
-
-  private pauseHard(): void {
-    this.pause();
-  }
-
-  /* ---------------- flow ---------------- */
-  private startRun(): void {
-    this.audio.start();
-    this.resetRun();
-    this.phase = 'playing';
-    this.hud.showOverlay(null);
-    this.hud.setObjective('Relay 1 of 3 — follow the beacon', false);
-    this.hud.setPips(0);
-  }
-
-  private restart(): void {
-    this.audio.start();
-    this.resetRun();
-    this.phase = 'playing';
-    this.hud.showOverlay(null);
-    this.hud.setObjective('Relay 1 of 3 — follow the beacon', false);
-    this.hud.setPips(0);
-    this.audio.click();
-  }
-
-  private resetRun(): void {
-    this.restartCount++;
-    this.score = 0;
-    this.charge = CHARGE_MAX;
-    this.relaysRestored = 0;
-    this.runTime = 0;
-    this.distance = 0;
-    this.vx = 0;
-    this.vy = 0;
-    this.speed = BASE_SPEED;
-    this.invuln = 1.4;
-    this.shake = 0;
-    this.fovKick = 0;
-    this.simT = 0;
-    this.shipPos.set(0, 2, 44);
-    this.camPos.set(0, 5.6, 53.6);
-    this.world.reset();
-    this.world.ensureChunks(0);
-    this.particles.clear();
-    this.lightningFresh = false;
-    this.syncApi();
-  }
-
-  private pause(): void {
-    if (this.phase !== 'playing') return;
-    this.phase = 'paused';
-    this.syncApi();
-    this.hud.showOverlay('pause');
-    this.input.releaseAll();
-    this.audio.setEngine(0, 0);
-  }
-
-  private resume(): void {
-    if (this.phase !== 'paused') return;
-    this.phase = 'playing';
-    this.syncApi();
-    this.hud.showOverlay(null);
-    this.audio.start();
-  }
-
-  private toggleMute(): void {
-    this.muted = !this.muted;
-    this.audio.setMuted(this.muted);
-    this.hud.setMuteIcon(this.muted);
-  }
-
-  private win(): void {
-    this.phase = 'won';
-    this.score += 2500;
-    this.syncApi();
-    this.audio.win();
-    this.hud.setWonStats(this.score, this.runTime, this.charge);
-    this.hud.showOverlay('won');
-    this.hud.waypointHide();
-    this.particles.burst(this.shipPos.x, this.shipPos.y, this.shipPos.z, 90, 0xffd9a0, 26, 1.6, { up: 6 });
-    this.shake = 0.5;
-  }
-
-  private lose(reason: string): void {
-    this.phase = 'lost';
-    this.syncApi();
-    this.audio.lose();
-    this.hud.setLostStats(reason, this.score, this.relaysRestored, this.runTime);
-    this.hud.showOverlay('lost');
-    this.hud.waypointHide();
-    this.particles.burst(this.shipPos.x, this.shipPos.y, this.shipPos.z, 80, 0xff5544, 18, 1.5, { up: 4 });
-    this.shake = 0.9;
-  }
-
-  /* ---------------- main loop ---------------- */
-  start(): void {
-    this.last = performance.now();
-    const loop = (): void => {
-      this.raf = requestAnimationFrame(loop);
-      const now = performance.now();
-      const dt = Math.min(0.05, (now - this.last) / 1000);
-      this.last = now;
-      this.clockT += dt;
-      this.cosT = this.clockT;
-      this.update(dt);
-      this.renderFrame();
-    };
-    this.raf = requestAnimationFrame(loop);
-  }
-
-  private update(dt: number): void {
-    this.input.frame();
-    this.input.startArmed = this.phase === 'ready';
-    this.world.ensureChunks(this.shipPos.z);
-
-    const busy = this.phase !== 'ready';
-    const playing = this.phase === 'playing';
-
-    // cosmetic world always animates; hazards use sim time (frozen unless playing)
-    this.world.update(dt, this.simT, this.cosT, this.shipPos);
-
-    // ambient weather light
-    const flash = this.world.strikeFlash;
-    this.dir.intensity = 1.5 + flash * 0.9;
-    this.amb.intensity = 0.5 + flash * 0.5;
-
-    if (this.lightningFresh !== (flash > 0.05)) {
-      this.lightningFresh = flash > 0.05;
-      if (this.lightningFresh) this.audio.lightning();
-    }
-
-    if (playing) {
-      this.simulate(dt);
-    } else if (this.phase === 'ready') {
-      // idle hover behind the start pad
-      this.shipPos.y = 2 + Math.sin(this.cosT * 1.1) * 0.5;
-      this.shipPos.x = Math.sin(this.cosT * 0.4) * 0.8;
-      this.craft.update(dt, this.cosT, {
-        roll: 0,
-        pitch: 0.08,
-        yaw: 0,
-        speedFrac: 0.12,
-        boost: false,
-        invulnFlash: false,
-      });
+function updateStrike(dt: number, craftX: number, craftY: number, craftZ: number): void {
+  if (strike) {
+    strike.t += dt;
+    const s = strike;
+    const tm = s.telegraph.material as THREE.MeshBasicMaterial;
+    const bm = s.bolt.material as THREE.MeshBasicMaterial;
+    const gm = s.glow.material as THREE.SpriteMaterial;
+    if (s.t < 1.25) {
+      // telegraph phase
+      const flick = 0.5 + 0.5 * Math.sin(s.t * 26) * Math.sin(s.t * 7.3);
+      tm.opacity = 0.05 + 0.16 * flick;
+      s.glow.scale.setScalar(14 + 4 * Math.sin(s.t * 13));
+      gm.opacity = 0.05 + 0.05 * flick;
+      const prowlX = s.x + Math.sin(s.t * 1.7) * 1.8;
+      const prowlY = s.y + Math.sin(s.t * 2.3) * 1.2;
+      s.telegraph.position.set(prowlX, s.y + 22, s.z);
+      (s.glow as THREE.Sprite).position.set(prowlX, prowlY, s.z);
+    } else if (s.t < 1.65) {
+      // bolt flash
+      bm.opacity = 0.85;
+      tm.opacity = 0;
+      gm.opacity = 0.55;
+      s.light.intensity = 160 * Math.max(0, 1 - (s.t - 1.25) / 0.4);
+      const dx = craftX - s.x, dy = craftY - s.y;
+      if (!s.struck && dx * dx + dy * dy < 8.5 * 8.5) {
+        s.struck = true;
+        if (invuln <= 0) {
+          charge -= LIGHTNING_DMG;
+          hazardHits++;
+          invuln = 0.9;
+          player.addShake(2.6, 3);
+          timeScale = 0.3;
+          audio.damage();
+          audio.strike();
+          ui.pulseDamage();
+          ui.flash('#ffffff', 0.9);
+          burst(craftX, craftY, craftZ, {
+            count: 26, color: [0.9, 0.95, 1], speed: 24, spread: 1, life: 0.55, size: 1.7,
+          });
+        }
+      }
+    } else if (s.t < 3.4) {
+      bm.opacity = Math.max(0, bm.opacity - dt * 2.2);
+      gm.opacity = Math.max(0, gm.opacity - dt * 0.5);
+      s.light.intensity *= Math.exp(-dt * 9);
     } else {
-      // paused / terminal: keep pose
-      this.craft.update(dt, this.cosT, {
-        roll: clamp(-this.vx * 0.04, -0.6, 0.6),
-        pitch: clamp(-this.vy * 0.018, -0.3, 0.3),
-        yaw: clamp(-this.vx * 0.016, -0.5, 0.5),
-        speedFrac: 0,
-        boost: false,
-        invulnFlash: this.invuln > 0,
-      });
+      s.done = true;
+      scene.remove(s.telegraph);
+      scene.remove(s.bolt);
+      scene.remove(s.glow);
+      scene.remove(s.light);
+      s.telegraph.geometry.dispose();
+      (s.telegraph.material as THREE.Material).dispose();
+      s.bolt.geometry.dispose();
+      (s.bolt.material as THREE.Material).dispose();
+      s.glow.material.dispose();
+      strike = null;
     }
-
-    this.particles.update(dt);
-    this.audio.setEngine(playing ? this.speed / BOOST_SPEED : 0, playing && this.input.boost ? 1 : 0);
-
-    // camera
-    this.updateCamera(dt, playing);
-
-    // inspector
-    this.syncApi();
-    const api = this.api;
-    if (playing) {
-      let best: { x: number; y: number; z: number; d: number } | null = null;
-      for (const o of this.world.orbs) {
-        if (o.taken) continue;
-        const dz = o.z - this.shipPos.z;
-        if (dz > -6 || dz < -260) continue;
-        const d = Math.hypot(o.x - this.shipPos.x, o.y - this.shipPos.y, dz);
-        if (d < 200 && (!best || d < best.d)) {
-          best = { x: o.x, y: o.y, z: o.z, d };
-        }
+    void craftZ;
+  }
+  if (!strike) {
+    strikeTimer -= dt;
+    if (strikeTimer <= 0) {
+      if (craftZ > 90) {
+        spawnStrike(craftZ);
+        audio.warning();
       }
-      api.nearestCharge = best;
+      strikeTimer = 5.5 + Math.random() * 4.5;
     }
   }
+}
 
-  /** Mirror current run state into the public inspector object. */
-  private syncApi(): void {
-    const api = this.api;
-    api.phase = this.phase;
-    api.score = this.score;
-    api.player.x = this.shipPos.x;
-    api.player.y = this.shipPos.y;
-    api.player.z = this.shipPos.z;
-    api.relaysRestored = this.relaysRestored;
-    api.charge = this.charge;
-    api.restartCount = this.restartCount;
+function makeGlowTex2(): THREE.CanvasTexture {
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, 'rgba(255,255,255,0.8)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(canvas);
+}
+
+// ============================================================================
+//  Input
+// ============================================================================
+const keys = new Set<string>();
+const drag = { dx: 0, dy: 0 };
+let dragActive = false;
+const pointers = new Map<number, { x: number; y: number; prevX: number; prevY: number; startX: number; startY: number; t: number; moved: boolean }>();
+
+window.addEventListener('keydown', (e) => {
+  audio.init();
+  const code = e.code;
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(code)) e.preventDefault();
+  keys.add(code);
+  if (phase === 'ready' && (code === 'Space' || code === 'Enter')) {
+    e.preventDefault();
+    startRun();
+    return;
+  }
+  if (code === 'KeyP' || code === 'Escape') {
+    if (phase === 'playing') pause();
+    else if (phase === 'paused') resume();
+  }
+  if (code === 'KeyR') {
+    if (phase !== 'ready') restart(false);
+  }
+  if (code === 'KeyM') ui.setMuted(audio.toggleMute());
+  if (code === 'Space' || code === 'ShiftLeft' || code === 'ShiftRight') {
+    audio.init();
+    if (phase === 'playing') audio.boostOn();
+  }
+}, { passive: false });
+
+window.addEventListener('keyup', (e) => {
+  keys.delete(e.code);
+});
+
+// pointer steering (desktop + touch)
+const canvasEl = renderer.domElement;
+canvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
+
+canvasEl.addEventListener('pointerdown', (e) => {
+  audio.init();
+  if (e.button !== 0) return;
+  dragActive = true;
+  pointers.set(e.pointerId, {
+    x: e.clientX, y: e.clientY, prevX: e.clientX, prevY: e.clientY,
+    startX: e.clientX, startY: e.clientY, t: performance.now(), moved: false,
+  });
+  canvasEl.setPointerCapture?.(e.pointerId);
+});
+
+canvasEl.addEventListener('pointermove', (e) => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  drag.dx += e.clientX - p.prevX;
+  drag.dy += e.clientY - p.prevY;
+  p.prevX = e.clientX;
+  p.prevY = e.clientY;
+  if (Math.abs(e.clientX - p.startX) + Math.abs(e.clientY - p.startY) > 12) p.moved = true;
+});
+
+canvasEl.addEventListener('pointerup', (e) => {
+  const p = pointers.get(e.pointerId);
+  pointers.delete(e.pointerId);
+  if (!p) return;
+  if (!p.moved && performance.now() - p.t < 260) touchTap = true;
+  if (pointers.size === 0) {
+    dragActive = false;
+    drag.dx = 0;
+    drag.dy = 0;
+  }
+});
+
+canvasEl.addEventListener('pointercancel', () => {
+  pointers.clear();
+  dragActive = false;
+  drag.dx = 0;
+  drag.dy = 0;
+});
+
+// touch: two-finger = sustained boost
+canvasEl.addEventListener('touchstart', () => {
+  twoFinger = pointers.size >= 2;
+}, { passive: true });
+canvasEl.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  twoFinger = pointers.size >= 2;
+}, { passive: false });
+
+window.addEventListener('blur', () => { /* keep playing on blur; visibilitychange handles hiding */ });
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && phase === 'playing') {
+    pause();
+    ui.setObjective('PAUSED — flight systems on hold');
+  }
+});
+
+window.addEventListener('resize', () => {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(w, h);
+  composer.setPixelRatio(renderer.getPixelRatio());
+  composer.setSize(w, h);
+  bloom.setSize(w, h);
+  fxaa.material.uniforms['resolution'].value.set(
+    1 / (w * renderer.getPixelRatio()),
+    1 / (h * renderer.getPixelRatio()),
+  );
+  particles.setPixelRatio(renderer.getPixelRatio());
+});
+
+// ============================================================================
+//  Helpers
+// ============================================================================
+function burst(x: number, y: number, z: number, opts: Parameters<Particles['burst']>[3]): void {
+  particles.burst(x, y, z, opts);
+}
+
+function applyHazard(px: number, py: number, pz: number): void {
+  if (invuln > 0) return;
+  charge -= HAZARD_DMG;
+  hazardHits++;
+  invuln = 0.9;
+  player.addShake(2.4, 3.4);
+  timeScale = 0.32;
+  audio.damage();
+  ui.pulseDamage();
+  ui.flash('#ff6655', 1.0);
+  burst(px, py, pz, {
+    count: 30, color: [1, 0.5, 0.2], speed: 24, spread: 1, life: 0.7, size: 2.0, gravity: -1,
+  });
+}
+
+const collectedOrbs: number[] = [];
+
+// ============================================================================
+//  Update
+// ============================================================================
+function updatePlaying(dt: number): void {
+  // --- input aggregation
+  let ix = 0;
+  let iy = 0;
+  if (keys.has('KeyA') || keys.has('ArrowLeft')) ix -= 1;
+  if (keys.has('KeyD') || keys.has('ArrowRight')) ix += 1;
+  if (keys.has('KeyW') || keys.has('ArrowUp')) iy += 1;
+  if (keys.has('KeyS') || keys.has('ArrowDown')) iy -= 1;
+
+  // pointer drag → velocity injection
+  const pxScale = window.innerWidth < 600 ? 0.085 : 0.045;
+  let ddx = drag.dx * pxScale;
+  let ddy = -drag.dy * (window.innerWidth < 600 ? 0.09 : 0.05);
+  // move the drag vector's steering toward matching velocity as well:
+  // (keep simple: one-shot impulses per frame, damped by steer)
+  drag.dx = 0;
+  drag.dy = 0;
+
+  // boost
+  const boostKey = keys.has('Space') || keys.has('ShiftLeft') || keys.has('ShiftRight');
+  boostHeld = boostKey || twoFinger;
+  if (touchTap) {
+    boostTapT = 0.55;
+    touchTap = false;
+  }
+  let boosting = boostHeld;
+  if (boostTapT > 0) {
+    boostTapT -= dt;
+    boosting = true;
   }
 
-  private simulate(dt: number): void {
-    this.simT += dt;
-    this.runTime += dt;
-    this.invuln = Math.max(0, this.invuln - dt);
-    this.islandCd = Math.max(0, this.islandCd - dt);
-    this.shake *= Math.exp(-dt * 3.6);
-    this.fovKick *= Math.exp(-dt * 3);
+  // time-scale recovery
+  timeScale += (1 - timeScale) * (1 - Math.exp(-8 * dt));
+  const sdt = dt * timeScale;
 
-    const boost = this.input.boost;
+  player.steer(sdt, ix, iy, ddx, ddy);
+  player.update(sdt, boosting, timeScale);
 
-    // steering
-    const ax = this.input.lx * MAX_VX;
-    const ay = this.input.ly * MAX_VY;
-    const k = 1 - Math.exp(-dt * 3.4);
-    this.vx += (ax - this.vx) * k;
-    this.vy += (ay - this.vy) * k;
-    this.shipPos.x += this.vx * dt;
-    this.shipPos.y += this.vy * dt;
+  // forward distance & charge
+  const drain = (BASE_DRAIN + (boosting ? BOOST_DRAIN : 0)) * sdt;
+  charge -= drain * (charge < 18 ? 0.6 : 1);
+  if (charge > MAX_CHARGE) charge = MAX_CHARGE;
 
-    // speed
-    const target = boost ? BOOST_SPEED : BASE_SPEED;
-    this.speed += (target - this.speed) * (1 - Math.exp(-dt * 2.3));
-    this.shipPos.z -= this.speed * dt;
-
-    // bounds
-    if (this.shipPos.x < -BOUND_X) {
-      this.shipPos.x = -BOUND_X;
-      this.vx = Math.max(0, this.vx);
-    } else if (this.shipPos.x > BOUND_X) {
-      this.shipPos.x = BOUND_X;
-      this.vx = Math.min(0, this.vx);
+  // cloud-nape hazard: pressing down too far drags the craft into the deck
+  if (player.y < -6.5) {
+    // strong resistance
+    player.vy += (-20 - player.vy) * (1 - Math.exp(-4 * sdt));
+    warningTimer -= sdt;
+    if (warningTimer <= 0) {
+      audio.warning();
+      warningTimer = 0.45;
     }
-    if (this.shipPos.y < BOUND_Y_MIN) {
-      this.shipPos.y = BOUND_Y_MIN;
-      this.vy = Math.max(0, this.vy);
-    } else if (this.shipPos.y > BOUND_Y_MAX) {
-      this.shipPos.y = BOUND_Y_MAX;
-      this.vy = Math.min(0, this.vy);
-    }
-
-    // islands: gentle push-out collision
-    if (this.islandCd <= 0) {
-      for (const isl of this.world.islands) {
-        const dz = this.shipPos.z - isl.z;
-        if (dz > 34 || dz < -34) continue;
-        const dx = this.shipPos.x - isl.x;
-        const dy = this.shipPos.y - isl.y;
-        const rad = Math.hypot(dx, dz);
-        const rMax = isl.r + 1.2;
-        if (rad < rMax && Math.abs(dy) < isl.h * 0.9 + 1.0) {
-          const nx = rad > 0.001 ? dx / rad : (Math.random() - 0.5);
-          const nz = rad > 0.001 ? dz / rad : (Math.random() - 0.5);
-          const push = rMax - rad;
-          this.shipPos.x += nx * push;
-          this.shipPos.z += nz * push;
-          this.vx -= nx * 22;
-          this.vy += dy > 0 ? 6 : -6;
-          this.charge -= 2.2;
-          this.islandCd = 0.7;
-          this.shake = Math.max(this.shake, 0.3);
-          this.hud.flashColor('white', 0.3);
-          this.particles.burst(this.shipPos.x, this.shipPos.y, this.shipPos.z, 10, 0x8f9fb0, 8, 0.6);
-          break;
-        }
-      }
-    }
-
-    // distance / score / charge
-    this.distance += this.speed * dt;
-    this.score += this.speed * dt * 0.1;
-    this.charge -= (DRAIN + (boost ? BOOST_DRAIN : 0)) * dt;
-    if (this.charge <= 0) {
-      this.charge = 0;
-      this.lose('The craft ran out of charge in the storm.');
+    belowDeckT += sdt;
+    if (belowDeckT > 1.5) {
+      fail('the courier was swallowed by the cloud deck');
       return;
     }
-    if (this.charge < 22) this.audio.lowCharge();
+  } else {
+    belowDeckT = Math.max(0, belowDeckT - sdt * 2);
+    warningTimer = 0.4;
+  }
+  if (phase !== 'playing') return;
 
-    // thrust particles
-    this.particles.spawn(
-      this.shipPos.x, this.shipPos.y, this.shipPos.z + 2.2,
-      (Math.random() - 0.5) * 1.5, (Math.random() - 0.5) * 1.5, 14 + Math.random() * 16,
-      0.5,
-      boost ? 0xffc857 : 0x5ee8ff,
-      { size: 0.9 }
-    );
-    if (boost) {
-      this.particles.spawn(
-        this.shipPos.x, this.shipPos.y, this.shipPos.z + 2.2,
-        (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6, 30 + Math.random() * 20,
-        0.55,
-        0xff8844,
-        { size: 1.5 }
-      );
-    }
+  if (invuln > 0) {
+    invuln -= dt;
+    player.group.visible = Math.floor(invuln * 12) % 2 === 0;
+  } else if (!player.group.visible) {
+    player.group.visible = true;
+  }
 
-    // orbs
-    for (let i = this.world.orbs.length - 1; i >= 0; i--) {
-      const o = this.world.orbs[i];
-      if (o.taken) continue;
-      const dx = this.shipPos.x - o.mesh.position.x;
-      const dy = this.shipPos.y - o.mesh.position.y;
-      const dz = this.shipPos.z - o.mesh.position.z;
-      if (dx * dx + dy * dy + dz * dz < ORB_R * ORB_R) {
-        o.taken = true;
-        o.mesh.visible = false;
-        this.charge = Math.min(CHARGE_MAX, this.charge + ORB_CHARGE);
-        this.score += 50;
-        this.audio.pickup();
-        const sp = this.toScreen(o.mesh.position);
-        this.hud.toast(`+${ORB_CHARGE} ⚡`, sp.x, sp.y);
-        this.particles.burst(o.mesh.position.x, o.mesh.position.y, o.mesh.position.z, 9, 0x4fe8dd, 7, 0.7);
-      }
-    }
+  // --- course sim
+  course.update(sdt, player.z);
+  for (let i = 0; i < course.gates.length; i++) course.gates[i].setHighlight(i === relaysRestored);
 
-    // signal arches
-    for (const a of this.world.arches) {
-      if (a.used) continue;
-      const dz = this.shipPos.z - a.z;
-      if (Math.abs(dz) > 6) continue;
-      const d2 = (this.shipPos.x - a.x) * (this.shipPos.x - a.x) + (this.shipPos.y - a.y) * (this.shipPos.y - a.y);
-      if (d2 < ARCH_R * ARCH_R) {
-        a.used = true;
-        this.charge = Math.min(CHARGE_MAX, this.charge + 2);
-        this.score += 25;
-        this.audio.arch();
-        this.particles.burst(a.x, a.y, a.z, 14, 0x9ff5ff, 10, 0.8);
-      }
-    }
-
-    // relays
-    if (this.relaysRestored < 3) {
-      const gate = this.world.relays[this.relaysRestored];
-      const gx = gate.x, gy = gate.y, gz = gate.z;
-      const dx = this.shipPos.x - gx;
-      const dy = this.shipPos.y - gy;
-      const dz = this.shipPos.z - gz;
-      if (dx * dx + dy * dy + dz * dz < 14 * 14 && Math.abs(dz) < 90) {
-        gate.startRestore();
-        this.relaysRestored++;
-        this.score += 1000;
-        this.charge = Math.min(CHARGE_MAX, this.charge + 30);
-        this.fovKick = 7;
-        this.shake = Math.max(this.shake, 0.35);
-        this.audio.relay();
-        this.audio.restoreHum();
-        const sp = this.toScreen(new THREE.Vector3(gx, gy, gz));
-        this.hud.toast(`RELAY ${this.relaysRestored}/3 +1000`, sp.x, sp.y - 40, 'gold', true);
-        this.particles.burst(gx, gy, gz, 70, this.relaysRestored === 3 ? 0x4fd8ff : 0x4fe8dd, 20, 1.4, { up: 3 });
-        if (this.relaysRestored < 3) {
-          this.world.activeRelay = this.relaysRestored;
-          this.hud.setObjective(`Relay ${this.relaysRestored + 1} of 3 — follow the beacon`, false);
-          this.hud.toast('RELAY ONLINE — NEXT TARGET LOCKED', window.innerWidth / 2, window.innerHeight * 0.32, 'teal', false);
-        } else {
-          this.world.activeRelay = 3;
-          this.world.extraction.setActive(true);
-          this.hud.setObjective('All relays online — cross the extraction ring', true);
-          this.hud.toast('EXTRACTION RING OPEN', window.innerWidth / 2, window.innerHeight * 0.32, 'gold', true);
-        }
-        this.hud.setPips(this.relaysRestored);
-      }
-    }
-
-    // extraction
-    if (this.relaysRestored >= 3) {
-      const ex = this.world.extraction;
-      const dx = this.shipPos.x - ex.x;
-      const dy = this.shipPos.y - ex.y;
-      const dz = this.shipPos.z - ex.z;
-      if (dx * dx + dy * dy + dz * dz < 12 * 12) {
-        this.win();
-        return;
-      }
-    }
-
-    // hazard collisions
-    if (this.invuln <= 0) {
-      for (const m of this.world.mines) {
-        if (m.gone) continue;
-        const p = m.group.position;
-        const dx = this.shipPos.x - p.x;
-        const dy = this.shipPos.y - p.y;
-        const dz = this.shipPos.z - p.z;
-        if (dx * dx + dy * dy + dz * dz < 3.0 * 3.0) {
-          this.hitHazard(m.x, m.y, m.z, 'mine');
-          m.gone = true;
-          m.group.visible = false;
-          break;
-        }
-      }
-      for (const d of this.world.drones) {
-        if (d.gone) continue;
-        const p = d.group.position;
-        const dx = this.shipPos.x - p.x;
-        const dy = this.shipPos.y - p.y;
-        const dz = this.shipPos.z - p.z;
-        if (dx * dx + dy * dy + dz * dz < 3.4 * 3.4) {
-          this.hitHazard(p.x, p.y, p.z, 'drone');
-          d.gone = true;
-          d.group.visible = false;
-          break;
-        }
-      }
-    }
-
-    // HUD
-    this.hud.setScore(this.score);
-    this.hud.setSpeed(this.speed, boost);
-    this.hud.setCharge(this.charge, CHARGE_MAX);
-    this.hud.setVignette(this.charge < 22, boost);
-    if (this.relaysRestored >= 3) {
-      this.hud.setObjective('All relays online — cross the extraction ring', this.charge < 22);
-    } else {
-      this.hud.setObjective(`Relay ${this.relaysRestored + 1} of 3 — follow the beacon`, this.charge < 22);
-    }
-
-    // waypoint
-    this.updateWaypoint();
-
-    // craft pose
-    const speedFrac = (this.speed - BASE_SPEED) / (BOOST_SPEED - BASE_SPEED);
-    const roll = clamp(-this.vx * 0.045 - this.input.lx * 0.12, -0.75, 0.75) ;
-    const pitch = clamp(-this.vy * 0.022 + 0.1, -0.45, 0.45);
-    const yaw = clamp(-this.vx * 0.02, -0.5, 0.5);
-    this.craft.update(dt, this.cosT, {
-      roll,
-      pitch,
-      yaw,
-      speedFrac,
-      boost,
-      invulnFlash: this.invuln > 0,
+  // --- orbs
+  collectedOrbs.length = 0;
+  course.tryCollectOrbs(player.x, player.y, player.z, 4.0, collectedOrbs);
+  for (const idx of collectedOrbs) {
+    const o = course.orbs[idx];
+    orbsCollected++;
+    orbScore += ORB_SCORE;
+    charge = Math.min(MAX_CHARGE, charge + ORB_GAIN);
+    audio.pickup();
+    burst(o.x, o.y, o.z, {
+      count: 14, color: [0.4, 0.95, 1], speed: 14, spread: 1, life: 0.5, size: 1.4,
     });
   }
 
-  private hitHazard(x: number, y: number, z: number, kind: 'mine' | 'drone'): void {
-    this.charge -= HIT_DAMAGE;
-    this.invuln = 1.6;
-    this.shake = 0.65;
-    this.fovKick = 5;
-    this.hud.flashColor('red', 1);
-    const sp = this.toScreen(new THREE.Vector3(x, y, z));
-    this.hud.toast(`-${HIT_DAMAGE} ⚡`, sp.x, sp.y - 20, 'gold');
-    this.audio.hit();
-    this.particles.burst(x, y, z, 40, kind === 'mine' ? 0xff3355 : 0xff4433, 16, 1.0, { up: 2 });
-    if (this.charge <= 0) {
-      this.charge = 0;
-      this.lose(kind === 'mine' ? 'The storm mines tore the hull apart.' : 'A storm sentinel rammed you. Signal lost.');
+  // --- hazard collisions
+  for (const d of course.drones) {
+    if (!d.active) continue;
+    const dx = d.x - player.x, dy = d.y - player.y, dz = d.z - player.z;
+    const rr = d.r + CRAFT_R;
+    if (dx * dx + dy * dy + dz * dz < rr * rr) {
+      applyHazard(player.x, player.y, player.z);
+      burst(d.x, d.y, d.z, { count: 20, color: [1, 0.35, 0.18], speed: 20, spread: 0.7, life: 0.6, size: 1.8 });
+    }
+  }
+  for (const tb of course.tumblers) {
+    if (!tb.active) continue;
+    const dx = tb.x - player.x, dy = tb.y - player.y, dz = tb.z - player.z;
+    const rr = tb.r + CRAFT_R;
+    if (dx * dx + dy * dy + dz * dz < rr * rr) {
+      applyHazard(player.x, player.y, player.z);
+      burst(tb.x, tb.y, tb.z, { count: 22, color: [0.7, 0.5, 0.35], speed: 16, spread: 0.8, life: 0.7, size: 2.0 });
+    }
+  }
+  for (const s of course.strikers) {
+    if (!s.active) continue;
+    const dx = s.x - player.x, dy = s.y - player.y, dz = s.z - player.z;
+    const rr = s.r + CRAFT_R;
+    if (dx * dx + dy * dy + dz * dz < rr * rr) {
+      applyHazard(player.x, player.y, player.z);
+      burst(s.x, s.y, s.z, { count: 26, color: [1, 0.7, 0.2], speed: 24, spread: 0.7, life: 0.6, size: 1.8 });
+      s.active = false;
     }
   }
 
-  private updateWaypoint(): void {
-    let tx: number, ty: number, tz: number;
-    let gold = false;
-    if (this.relaysRestored < 3) {
-      const g = this.world.relays[this.relaysRestored];
-      tx = g.x; ty = g.y; tz = g.z;
-    } else {
-      tx = this.world.extraction.x; ty = this.world.extraction.y; tz = this.world.extraction.z;
-      gold = true;
-    }
-    const v = new THREE.Vector3(tx, ty, tz).project(this.camera);
-    const behind = v.z > 1;
-    if (behind) {
-      v.x = -v.x;
-      v.y = -v.y;
-    }
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    let sx = (v.x * 0.5 + 0.5) * w;
-    let sy = (-v.y * 0.5 + 0.5) * h;
-    const m = 46;
-    const dx = sx - w / 2;
-    const dy = sy - h / 2;
-    const dist = Math.hypot(this.shipPos.x - tx, this.shipPos.y - ty, this.shipPos.z - tz);
-    if (!behind && Math.abs(dx) < 26 && Math.abs(dy) < 26) {
-      this.hud.waypointHide();
-      return;
-    }
-    const cx = clamp(sx, m, w - m);
-    const cy = clamp(sy, m, h - m);
-    const angle = (Math.atan2(cy - h / 2, cx - w / 2) * 180) / Math.PI + 90;
-    this.hud.waypointShow(cx, cy, angle, dist, gold);
-  }
+  if (phase !== 'playing') return;
 
-  private updateCamera(dt: number, playing: boolean): void {
-    const speedFrac = playing ? clamp((this.speed - BASE_SPEED) / (BOOST_SPEED - BASE_SPEED), 0, 1) : 0.05;
-    let tx = this.shipPos.x - this.vx * 0.55;
-    let ty = this.shipPos.y + 3.7;
-    let tz = this.shipPos.z + 9.6;
-    if (!playing && this.phase === 'ready') {
-      tx += Math.sin(this.cosT * 0.25) * 1.4;
-    }
-    tx += (Math.random() - 0.5) * this.shake * 1.4;
-    ty += (Math.random() - 0.5) * this.shake * 1.1;
-    tz += (Math.random() - 0.5) * this.shake * 1.4;
-    const k = 1 - Math.exp(-dt * 5.2);
-    this.camPos.x += (tx - this.camPos.x) * k;
-    this.camPos.y += (ty - this.camPos.y) * k;
-    this.camPos.z += (tz - this.camPos.z) * k;
-    this.camera.position.copy(this.camPos);
-    const look = new THREE.Vector3(
-      this.shipPos.x + this.vx * 0.6,
-      this.shipPos.y + 1.35 + this.vy * 0.3,
-      this.shipPos.z - 13 - speedFrac * 9
-    );
-    this.camera.lookAt(look);
-
-    const fovTarget = 60 + speedFrac * 20 + this.fovKick + Math.random() * this.shake * 1.4;
-    if (Math.abs(fovTarget - this.camera.fov) > 0.05) {
-      this.camera.fov += (fovTarget - this.camera.fov) * Math.min(1, dt * 6);
-      this.camera.updateProjectionMatrix();
+  // --- gates
+  const ev = course.tryGateCross(player.z - player.speed * sdt, player.z, player.x, player.y);
+  if (ev) {
+    if (ev.type === 'relay') {
+      if (ev.index === relaysRestored) {
+        relaysRestored++;
+        relayScore += RELAY_SCORE;
+        charge = Math.min(MAX_CHARGE, charge + RELAY_GAIN);
+        course.markRelayRestored(ev.index);
+        audio.restore();
+        player.addShake(1.0, 2);
+        ui.flash('#ffe9a8', 0.8);
+        burst(course.gates[ev.index].x, course.gates[ev.index].y, course.gates[ev.index].z, {
+          count: 60, color: [1, 0.85, 0.45], speed: 26, spread: 1, life: 1.0, size: 2.0,
+        });
+        if (relaysRestored >= 3) {
+          ui.setObjective('ALL RELAYS RESTORED — CROSS THE EXTRACTION RING AHEAD');
+          course.extract.setUnlocked(true);
+          burst(player.x, player.y, player.z, { count: 30, color: [1, 0.8, 0.5], speed: 18, spread: 1, life: 0.8, size: 1.6 });
+        }
+      } else if (ev.index > relaysRestored) {
+        // out-of-order: handled order penalty
+        charge -= OFFORDER_DMG;
+        invuln = Math.max(invuln, 0.5);
+        audio.damage();
+        ui.pulseDamage();
+        ui.flash('#ff9a6b', 0.6);
+        burst(player.x, player.y, player.z, { count: 16, color: [1, 0.6, 0.3], speed: 16, spread: 0.9, life: 0.5, size: 1.5 });
+      }
+    } else if (ev.type === 'extract') {
+      win();
+    } else if (ev.type === 'locked') {
+      lockNoticeT = 2.5;
+      audio.damage();
+      ui.flash('#ffca7a', 0.4);
+      burst(player.x, player.y, player.z, { count: 14, color: [1, 0.75, 0.4], speed: 14, spread: 0.9, life: 0.5, size: 1.4 });
     }
   }
 
-  private toScreen(v: THREE.Vector3): { x: number; y: number } {
-    const p = v.clone().project(this.camera);
-    return {
-      x: (p.x * 0.5 + 0.5) * window.innerWidth,
-      y: (-p.y * 0.5 + 0.5) * window.innerHeight,
-    };
-  }
+  if (phase !== 'playing') return;
 
-  private renderFrame(): void {
-    this.composer.render();
+  // --- lightning
+  updateStrike(sdt, player.x, player.y, player.z);
+
+  // --- engine trail
+  const spawnRate = (boostHeld || boosting ? 90 : 46) * sdt;
+  const tz = player.speed * 0.25;
+  particles.trickle(
+    player.x - 0.95, player.y - 0.05, player.z - 2.2,
+    -player.vx * 0.2, -player.vy * 0.2, player.speed - tz,
+    spawnRate * 2,
+    boostHeld || boosting ? 0.42 : 0.3,
+    boostHeld || boosting ? 1.7 : 1.1,
+    0.55, 0.85, 1,
+    1.2,
+  );
+
+  // --- failure checks
+  if (charge <= 0) {
+    fail('carrier charge depleted');
+    return;
+  }
+  if (lockNoticeT > 0) lockNoticeT -= sdt;
+  updateScore();
+  bench.relaysRestored = relaysRestored;
+  runMs += sdt * 1000;
+}
+
+function updateWon(dt: number): void {
+  wonT += dt;
+  player.speed += (4 - player.speed) * (1 - Math.exp(-1.8 * dt));
+  player.z += player.speed * dt;
+  course.update(dt, player.z);
+  timeScale += (0.25 - timeScale) * (1 - Math.exp(-3 * dt));
+  particles.trickle(
+    player.x, player.y + 1, player.z - 1,
+    (Math.random() - 0.5) * 4, 6 + Math.random() * 8, player.speed * 0.2,
+    8 * dt, 1.2, 1.8, 1, 0.85, 0.4, 0.2,
+  );
+  if (wonT > 1.4 && !overlayShown) {
+    overlayShown = true;
+    ui.showWinStats({
+      timeMs: runMs, orbs: orbsCollected, relays: relaysRestored, score, hits: hazardHits,
+    });
+    ui.showOverlay('won');
+  }
+  // cinematic pull-back so the ring reads as a landmark, not a white-out
+  const ck = 1 - Math.exp(-2.2 * dt);
+  camera.position.x += (player.x - camera.position.x) * ck;
+  camera.position.y += (player.y + 9.5 - camera.position.y) * ck;
+  camera.position.z += (player.z - 42 - camera.position.z) * ck;
+  camera.up.set(0, 1, 0);
+  camera.lookAt(player.x, player.y + 1, player.z + 34);
+  updateScore();
+}
+
+function updateLost(dt: number): void {
+  lostT += dt;
+  player.sinkUpdate(dt);
+  // camera keeps watching the sinking craft
+  camera.position.x += (player.x - camera.position.x) * (1 - Math.exp(-3 * dt));
+  camera.position.y = player.y + 26;
+  camera.position.z = player.z - 12;
+  camera.up.set(0, 1, 0);
+  camera.lookAt(player.x, player.y - 4, player.z + 14);
+  particles.trickle(
+    player.x, player.y, player.z,
+    (Math.random() - 0.5) * 8, -4 + Math.random() * 6, player.speed * 0.1,
+    26 * dt, 1.4, 2.4, 1, 0.45, 0.2, -1,
+  );
+  if (lostT > 1.1 && !overlayShown) {
+    overlayShown = true;
+    ui.setLostReason(lostReason);
+    ui.showOverlay('lost');
   }
 }
 
-// boot
-try {
-  const game = new Game();
-  game.start();
-} catch (err) {
-  console.error(err);
-  const root = document.getElementById('app');
-  if (root) {
-    root.innerHTML = `<div style="font-family:system-ui;padding:2rem;color:#f6f5ef">
-      <h2>Signal Drift could not start</h2>
-      <p style="color:#9fd4ff">WebGL appears to be unavailable in this browser.</p></div>`;
-  }
+function updateReady(dt: number, t: number): void {
+  player.idleUpdate(dt, t);
+  course.update(dt, player.z);
+  particles.trickle(
+    player.x - 0.95, player.y - 0.05, player.z - 2.2,
+    -player.vx * 0.2, -player.vy * 0.2, player.speed - 10,
+    10 * dt, 0.5, 1.2, 0.55, 0.85, 1, 1.2,
+  );
 }
+
+// ============================================================================
+//  Main loop
+// ============================================================================
+let lastT = performance.now();
+let globalT = 0;
+
+function frame(now: number): void {
+  // 0.1s clamp keeps the sim at real-time even around ~10fps software rendering;
+  // the game also auto-pauses when the tab is hidden, so long frames are rare.
+  const rawDt = Math.min(0.1, (now - lastT) / 1000);
+  lastT = now;
+  globalT += rawDt;
+  const dt = rawDt;
+
+  if (phase === 'playing') {
+    updatePlaying(dt);
+  } else if (phase === 'won') {
+    updateWon(dt);
+  } else if (phase === 'lost') {
+    updateLost(dt);
+  } else if (phase === 'ready') {
+    updateReady(dt, globalT);
+  }
+  // paused: no simulation, static frame
+
+  skyline.update(dt, player.x, player.y, player.z, camera.position.z);
+  particles.update(dt);
+
+  // contract
+  bench.score = score;
+  bench.player.x = player.x;
+  bench.player.y = player.y;
+  bench.player.z = player.z;
+  bench.charge = charge;
+  bench.restartCount = restartCount;
+  bench.orbsCollected = orbsCollected;
+  bench.hazardHits = hazardHits;
+  bench.timeMs = runMs;
+  if (!Number.isFinite(bench.player.x)) bench.player.x = 0;
+  if (!Number.isFinite(bench.player.y)) bench.player.y = 12;
+  if (!Number.isFinite(bench.player.z)) bench.player.z = 0;
+  if (!Number.isFinite(bench.charge)) bench.charge = 0;
+
+  // hud
+  if (phase !== 'ready') {
+    ui.update({
+      charge,
+      relaysRestored,
+      score,
+      speed: player.speed,
+      boosting: boostHeld,
+      timeMs: runMs,
+      orbs: orbsCollected,
+      hits: hazardHits,
+    }, now);
+  }
+
+  audio.setEngine(player.speed / CRUISE, boostHeld || boostTapT > 0);
+
+  composer.render();
+
+  if (phase === 'playing') ui.setObjective(objectiveText());
+}
+renderer.setAnimationLoop(frame);
+
+// initial overlay
+ui.showOverlay('ready');
+
+// canvas must be a child of #app *after* the UI markup is built (innerHTML would wipe it)
+root.prepend(renderer.domElement);
+ui.setObjective('PREPARE FOR DELIVERY — RESTORE ALL THREE RELAY GATES');
+ui.setMuted(false);
+
+// first-frame camera intro
+camera.position.set(0, 19, -8);
+player.lookAtCenter();
+
+console.log('Signal Drift ready (seed', SEED + ')');
