@@ -1,0 +1,73 @@
+{
+  "steps": [
+    {
+      "step": "ready",
+      "phase": "ready",
+      "fps": 56
+    },
+    {
+      "step": "begin",
+      "phase": "playing"
+    },
+    {
+      "step": "pause",
+      "phase": "paused",
+      "resumed": "playing"
+    },
+    {
+      "step": "autopilot",
+      "phase": "lost",
+      "relays": 3,
+      "seconds": 25.119
+    },
+    {
+      "step": "restart",
+      "phase": "playing",
+      "restartCount": 1
+    },
+    {
+      "step": "fail",
+      "phase": "lost",
+      "charge": 0
+    },
+    {
+      "step": "visibility",
+      "phase": "paused",
+      "expected": "paused"
+    },
+    {
+      "step": "phone-begin",
+      "phase": "paused",
+      "controls": "touch"
+    },
+    {
+      "step": "phone-drag",
+      "headingBefore": {
+        "x": 0.00023169054337677348,
+        "y": -0.1686944475221024,
+        "z": -0.9856683669950582
+      },
+      "headingAfter": {
+        "x": 0.00023169054337677348,
+        "y": -0.1686944475221024,
+        "z": -0.9856683669950582
+      }
+    },
+    {
+      "step": "phone-boost",
+      "throttle": 0.3898305084745763
+    },
+    {
+      "step": "phone-run",
+      "phase": "paused",
+      "relays": 0
+    }
+  ],
+  "errors": [],
+  "console": [],
+  "requests": [
+    "http://127.0.0.1:4191/",
+    "http://127.0.0.1:4191/assets/index-DDcpdBZJ.js",
+    "http://127.0.0.1:4191/assets/index-CJame3_5.css"
+  ]
+}
