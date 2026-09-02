@@ -1,0 +1,476 @@
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: #101214;
+  color: #f6f5ef;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+canvas {
+  display: block;
+}
+
+.hud-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+.hud-root.impact-flash::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: rgba(224, 60, 60, 0.35);
+  pointer-events: none;
+  z-index: 50;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---- Overlay screens (briefing / end) ---- */
+.overlay-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: radial-gradient(ellipse at center, rgba(20, 26, 34, 0.92), rgba(6, 8, 10, 0.97));
+  pointer-events: auto;
+  text-align: center;
+  padding: 24px;
+  z-index: 100;
+}
+
+.overlay-screen h1 {
+  font-size: clamp(2rem, 6vw, 3.4rem);
+  letter-spacing: 0.12em;
+  margin: 0;
+  color: #eaf3ff;
+  text-shadow: 0 0 18px rgba(90, 170, 255, 0.5);
+}
+
+.overlay-screen .win-title {
+  color: #7fe08a;
+  text-shadow: 0 0 20px rgba(100, 230, 130, 0.6);
+}
+
+.overlay-screen .lose-title {
+  color: #ff7a6b;
+  text-shadow: 0 0 20px rgba(255, 90, 70, 0.6);
+}
+
+.subtitle {
+  color: #a9b6c2;
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+}
+
+.brief-text {
+  max-width: 560px;
+  color: #d7dee5;
+  line-height: 1.5;
+  font-size: 0.95rem;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 6px 24px;
+  max-width: 620px;
+  color: #c7d2db;
+  font-size: 0.85rem;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 14px 18px;
+}
+
+.stats-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 14px 22px;
+  font-size: 0.95rem;
+  color: #dbe4ea;
+}
+
+.primary-btn {
+  margin-top: 8px;
+  padding: 14px 38px;
+  font-size: 1.05rem;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  color: #0c1116;
+  background: linear-gradient(180deg, #7fd6ff, #3d9dde);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 4px 18px rgba(60, 160, 230, 0.45);
+  pointer-events: auto;
+}
+
+.primary-btn:active {
+  transform: translateY(1px);
+}
+
+/* ---- HUD layer ---- */
+.hud-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.panel {
+  position: absolute;
+  background: rgba(8, 14, 18, 0.42);
+  border: 1px solid rgba(140, 200, 230, 0.22);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 0.8rem;
+  color: #d9e6ee;
+  backdrop-filter: blur(2px);
+}
+
+.status-panel {
+  top: 16px;
+  left: 16px;
+  min-width: 190px;
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.bar-label {
+  width: 30px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #9fb4c2;
+}
+
+.bar-track {
+  flex: 1;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  width: 100%;
+  transition: width 0.08s linear;
+}
+
+.health-fill {
+  background: #5fd66c;
+}
+
+.throttle-fill {
+  background: #4aa8ff;
+}
+
+.bar-value {
+  width: 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.flight-row {
+  display: flex;
+  justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  color: #eaf2f7;
+  margin: 6px 0;
+}
+
+.weapons-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: #cfe0ea;
+}
+
+.gun-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #5fd66c;
+  display: inline-block;
+}
+
+.missile-text {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.objective-panel {
+  top: 16px;
+  right: 16px;
+  text-align: right;
+  min-width: 220px;
+}
+
+.objective-text {
+  font-weight: 600;
+  color: #ffd23d;
+  margin-bottom: 4px;
+}
+
+.targets-text {
+  color: #d9e6ee;
+  margin-bottom: 4px;
+}
+
+.time-text {
+  color: #93a6b2;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+}
+
+.reticle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 34px;
+  height: 34px;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(230, 240, 245, 0.6);
+  border-radius: 50%;
+}
+
+.reticle.locked {
+  border-color: #ffd23d;
+}
+
+.reticle-cross::before,
+.reticle-cross::after {
+  content: '';
+  position: absolute;
+  background: rgba(230, 240, 245, 0.7);
+}
+
+.reticle-cross::before {
+  left: 50%;
+  top: -8px;
+  width: 2px;
+  height: 8px;
+  transform: translateX(-50%);
+}
+
+.reticle-cross::after {
+  top: 50%;
+  left: -8px;
+  width: 8px;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+.lock-box {
+  position: absolute;
+  width: 46px;
+  height: 46px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #ff5252;
+  border-radius: 4px;
+}
+
+.lock-ring {
+  position: absolute;
+  width: 58px;
+  height: 58px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  mask: radial-gradient(circle, transparent 60%, black 62%);
+  -webkit-mask: radial-gradient(circle, transparent 60%, black 62%);
+}
+
+.hit-marker {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #ffd23d;
+  font-size: 1.4rem;
+  font-weight: bold;
+  text-shadow: 0 0 6px rgba(255, 210, 61, 0.8);
+}
+
+.missile-warning {
+  position: absolute;
+  top: 20%;
+  left: 50%;
+  transform: translate(-50%, 0);
+  color: #ff5252;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-size: 1.1rem;
+  animation: pulse 0.5s infinite alternate;
+  text-shadow: 0 0 10px rgba(255, 60, 60, 0.8);
+}
+
+@keyframes pulse {
+  from {
+    opacity: 0.5;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.message-banner {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, 0);
+  color: #ffd23d;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
+  background: rgba(10, 14, 16, 0.5);
+  padding: 8px 20px;
+  border-radius: 6px;
+}
+
+.damage-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(200, 20, 20, 0.55) 100%);
+  opacity: 0;
+  transition: opacity 0.15s linear;
+}
+
+.radar-wrap {
+  position: absolute;
+  bottom: 20px;
+  left: 16px;
+  width: 150px;
+  height: 150px;
+}
+
+.waypoint-arrow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  font-size: 1.6rem;
+  color: #3da8ff;
+  text-shadow: 0 0 10px rgba(60, 160, 255, 0.8);
+}
+
+.controls-hint {
+  position: absolute;
+  bottom: 8px;
+  right: 16px;
+  font-size: 0.65rem;
+  color: rgba(200, 215, 225, 0.55);
+  max-width: 360px;
+  text-align: right;
+}
+
+/* ---- Touch controls ---- */
+.touch-controls {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  z-index: 40;
+}
+
+.stick-base {
+  position: absolute;
+  bottom: 30px;
+  left: 30px;
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  pointer-events: auto;
+}
+
+.stick-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.touch-buttons {
+  position: absolute;
+  bottom: 30px;
+  right: 20px;
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  pointer-events: auto;
+}
+
+.throttle-col {
+  position: absolute;
+  bottom: 30px;
+  right: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.touch-btn {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.12);
+  color: #eaf2f7;
+  font-size: 0.85rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.throttle-btn {
+  width: 48px;
+  height: 48px;
+}
+
+.missile-btn {
+  background: rgba(255, 82, 82, 0.25);
+  border-color: rgba(255, 120, 120, 0.5);
+}
+
+.gun-btn {
+  background: rgba(255, 210, 61, 0.2);
+  border-color: rgba(255, 210, 61, 0.5);
+}
